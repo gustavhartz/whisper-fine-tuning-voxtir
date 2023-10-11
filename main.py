@@ -4,6 +4,8 @@ import requests
 from gql_queries import getAudioFile, getJSONDocument, getProject
 import pandas as pd
 import json
+from datasets import Dataset
+import subprocess
 
 # Obtain from URL on Voxtir platform
 PROJECT_ID = ""
@@ -74,45 +76,59 @@ last_timestamp_at=0
 text_collection = ""
 dataset = []
 for idx, row in df.iterrows():
+    # Load the json file
     jsondata = json.load(open(row["json"]))
     for section in jsondata["default"]["content"]:
         for node in section["content"]:
             if node["type"] == "text":
-                for child in node["content"]:
-                    if child["type"] == "text":
-                        text_collection += child["text"]
-                    if child["type"] == "timeStampButton":
-                        # hh:mm:ss.ms
-                        timestamp_str=child["attrs"]["timestamp"]
-                        timestamp_seconds = int(timestamp_str.split(":")[0])*3600 + int(timestamp_str.split(":")[1])*60 + int(timestamp_str.split(":")[2].split(".")[0])
-                        
-                        # Whisper works on 30 second intervals
-                        if timestamp_seconds - last_timestamp_at > 30:
-                            text_collection = ""
-                            last_timestamp_at = timestamp_seconds
-                            continue
-                        # Extract the audio with ffmpeg
-                        file_name = f"output/audio/{row['id']}_{last_timestamp_at}_{timestamp_str}.mp3"
-                        command = f"ffmpeg -ss {last_timestamp_at} -i {row['audio']} -t {timestamp_seconds-last_timestamp_at} {file_name}"
+                text_collection += node["text"]
+            if node["type"] == "timeStampButton":
+                # hh:mm:ss.ms
+                timestamp_str=node["attrs"]["timestamp"]
+                timestamp_seconds = int(timestamp_str.split(":")[0])*3600 + int(timestamp_str.split(":")[1])*60 + int(timestamp_str.split(":")[2].split(".")[0])
+                
+                # Whisper works on 30 second intervals
+                if timestamp_seconds - last_timestamp_at > 30:
+                    text_collection = ""
+                    last_timestamp_at = timestamp_seconds
+                    continue
+                # Extract the audio with ffmpeg
+                file_name = f"output/audio/processed/{row['id']}_{last_timestamp_at}_{timestamp_str}.mp3"                
+                command = [
+                    "ffmpeg",
+                    "-loglevel",
+                    "error",
+                    "-hide_banner",
+                    "-y",
+                    "-i",
+                    row['audio'],
+                    "-ss",
+                    f"{last_timestamp_at}",
+                    "-t",
+                    f"{timestamp_seconds-last_timestamp_at}",
+                    file_name,
+                ]
+                subprocess.check_output(command)
+                dataset.append(
+                    {
+                        "text": text_collection,
+                        "audio": file_name,
+                        "start": last_timestamp_at,
+                        "end": timestamp_seconds,
+                        "duration": timestamp_seconds-last_timestamp_at,
+                        "original": row["audio"]
 
-                        dataset.append(
-                            {
-                                "text": text_collection,
-                                "audio": file_name,
-                                "start": last_timestamp_at,
-                                "end": timestamp_seconds,
-                                "duration": timestamp_seconds-last_timestamp_at,
-                                "original": row["audio"]
-
-                            }
-                        )
+                    }
+                )
 
 
+df_segments = pd.DataFrame(dataset)
 # Create the huggingface dataset
 
-# Fine-tune the model
+audio_df = Dataset.from_dict({"text": df_segments["text"], "audio": df_segments["audio"]})
 
-
+# Fine-tune the model using this guide https://huggingface.co/blog/fine-tune-whisper
+print(audio_df[0])
 
             
 
